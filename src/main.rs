@@ -12,6 +12,7 @@ mod artworkdb;
 mod audio;
 mod config;
 mod copier;
+mod csvlist;
 mod dedupe;
 mod dedupe_ui;
 mod fonts;

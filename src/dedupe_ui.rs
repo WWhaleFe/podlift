@@ -6,7 +6,9 @@ use crate::config::Config;
 use crate::dedupe::{self, DedupeEvent, Group, Scanner, TrashEvent, Trasher};
 use crate::egui;
 use crate::ipod::Ipod;
+use crate::csvlist;
 use crate::ipod_dedupe;
+use std::sync::mpsc::{self, Receiver};
 use crate::theme::{self, Palette};
 use egui::{Color32, RichText, Stroke};
 use std::collections::{HashMap, HashSet};
@@ -69,6 +71,14 @@ struct Notice {
     failed: Vec<(PathBuf, String)>,
 }
 
+/// CSV 내보내기·불러오기 작업 소식
+enum CsvMsg {
+    /// (읽은 수, 전체, 하는 일)
+    Progress(usize, usize, &'static str),
+    Exported(Result<(PathBuf, usize), String>),
+    Imported(Result<(Vec<(Group, Vec<usize>)>, csvlist::ImportReport), String>),
+}
+
 /// 무엇을 정리하나
 #[derive(Clone, Copy, PartialEq)]
 enum Target {
@@ -114,6 +124,11 @@ pub struct DedupeTab {
     last_space: Option<(f64, usize, Vec<bool>)>,
     /// '선택한 묶음 전체 삭제' 경고창을 띄웠는지
     confirm_pick_delete: bool,
+    /// CSV 내보내기·불러오기 (진행 중이면 Some), 진행 (읽은 수, 전체, 하는 일)
+    csv_job: Option<Receiver<CsvMsg>>,
+    csv_progress: (usize, usize, &'static str),
+    /// 불러오는 CSV 의 대상 (아이팟이면 마운트)
+    csv_ipod: Option<PathBuf>,
 }
 
 impl DedupeTab {
@@ -143,6 +158,9 @@ impl DedupeTab {
             scroll_to_cursor: false,
             last_space: None,
             confirm_pick_delete: false,
+            csv_job: None,
+            csv_progress: (0, 0, ""),
+            csv_ipod: None,
         };
         // 개발·점검용: PODLIFT_DEDUPE_DIR 가 있으면 그 폴더로 바로 중복 찾기를 시작한다.
         if let Ok(dir) = std::env::var("PODLIFT_DEDUPE_DIR") {
@@ -154,7 +172,7 @@ impl DedupeTab {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.scanner.is_some() || self.trasher.is_some() || self.ipod_job.is_some()
+        self.scanner.is_some() || self.trasher.is_some() || self.ipod_job.is_some() || self.csv_job.is_some()
     }
 
     /// 아이팟 곡 DB 를 고쳤으면 한 번 true (넣기 탭이 DB 를 다시 읽는다)
@@ -186,6 +204,19 @@ impl DedupeTab {
             }
             if finished {
                 self.scanner = None;
+            }
+        }
+        if let Some(rx) = &self.csv_job {
+            let mut finished = None;
+            for m in rx.try_iter() {
+                match m {
+                    CsvMsg::Progress(d, t, what) => self.csv_progress = (d, t, what),
+                    other => finished = Some(other),
+                }
+            }
+            if let Some(m) = finished {
+                self.csv_job = None;
+                self.finish_csv(m);
             }
         }
         if let Some(job) = &self.ipod_job {
@@ -368,6 +399,132 @@ impl DedupeTab {
         }
     }
 
+    /// 정리할 곳: (CSV 경로의 기준, 곡을 찾을 폴더, 아이팟이면 마운트)
+    fn csv_place(&self, cfg: &Config, device: Option<&Ipod>) -> Option<(PathBuf, PathBuf, Option<PathBuf>)> {
+        match (self.target, device) {
+            (Target::Ipod, Some(d)) => Some((d.mount.clone(), d.mount.join("iPod_Control").join("Music"), Some(d.mount.clone()))),
+            (Target::Ipod, None) => None,
+            (Target::Folder, _) => {
+                let dir = if cfg.dedupe_path.trim().is_empty() { cfg.output_path.clone() } else { cfg.dedupe_path.clone() };
+                let dir = PathBuf::from(dir.trim());
+                Some((dir.clone(), dir, None))
+            }
+        }
+    }
+
+    /// 전체 곡 목록을 CSV 로 내보낸다 (저장할 곳을 묻는다)
+    fn export_csv(&mut self, cfg: &Config, device: Option<&Ipod>) {
+        let Some((root, dir, _)) = self.csv_place(cfg, device) else { return };
+        let name = if self.target == Target::Ipod { "podlift-아이팟-곡목록.csv" } else { "podlift-곡목록.csv" };
+        let Some(out) = rfd::FileDialog::new().set_title("곡 목록 CSV 저장").set_file_name(name).add_filter("CSV", &["csv"]).save_file() else { return };
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            let result = csvlist::read_all(&dir, &stop, |d, t| {
+                let _ = tx.send(CsvMsg::Progress(d, t, "곡 정보 읽는 중"));
+            })
+            .and_then(|infos| {
+                std::fs::write(&out, csvlist::to_csv(&root, &infos)).map_err(|e| format!("저장하지 못했습니다: {e}"))?;
+                Ok((out, infos.len()))
+            });
+            let _ = tx.send(CsvMsg::Exported(result));
+        });
+        self.notice = None;
+        self.csv_progress = (0, 0, "곡 정보 읽는 중");
+        self.csv_job = Some(rx);
+    }
+
+    /// AI 가 group 을 채운 CSV 를 불러와 중복 묶음을 만든다
+    fn import_csv(&mut self, cfg: &Config, device: Option<&Ipod>) {
+        let Some((root, dir, ipod)) = self.csv_place(cfg, device) else { return };
+        let Some(file) = rfd::FileDialog::new().set_title("group 을 채운 CSV 불러오기").add_filter("CSV", &["csv"]).pick_file() else { return };
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let bytes = std::fs::read(&file).map_err(|e| format!("CSV 를 읽지 못했습니다: {e}"))?;
+                let text = String::from_utf8(bytes).map_err(|_| "CSV 가 UTF-8 이 아닙니다. UTF-8 로 저장해 주세요.".to_string())?;
+                let (groups, report) = csvlist::read_groups(&text, &root)?;
+                let stop = std::sync::atomic::AtomicBool::new(false);
+                let built = csvlist::build_groups(groups, &stop, |d, t| {
+                    let _ = tx.send(CsvMsg::Progress(d, t, "묶음의 곡과 앨범 아트 읽는 중"));
+                })?;
+                Ok((built, report))
+            })();
+            let _ = tx.send(CsvMsg::Imported(result));
+        });
+        self.notice = None;
+        self.confirm = false;
+        self.csv_ipod = ipod;
+        self.scan_root = dir;
+        self.csv_progress = (0, 0, "CSV 읽는 중");
+        self.csv_job = Some(rx);
+    }
+
+    fn finish_csv(&mut self, m: CsvMsg) {
+        match m {
+            CsvMsg::Exported(Ok((path, n))) => {
+                self.notice = Some(Notice {
+                    text: format!("곡 {n}개 목록을 {} 에 저장했습니다. 'AI 요청문 복사'로 요청문을 복사해 CSV 와 함께 AI 에게 주세요.", path.display()),
+                    color_err: false,
+                    failed: Vec::new(),
+                });
+            }
+            CsvMsg::Imported(Ok((groups, report))) => {
+                self.cursor = None;
+                self.last_space = None;
+                self.textures.clear();
+                self.scanned_ipod = self.csv_ipod.take();
+                self.cleaned = false;
+                self.scanned = true;
+                self.scanned_files = report.rows;
+                self.heights = groups.iter().map(|(g, _)| estimate_height(g.items.len())).collect();
+                self.groups = groups
+                    .into_iter()
+                    .map(|(g, marked)| {
+                        let mut u = UiGroup::new(g, false);
+                        if !marked.is_empty() {
+                            u.multi = marked.len() > 1;
+                            u.keeps = (0..u.keeps.len()).map(|i| marked.contains(&i)).collect();
+                        }
+                        u
+                    })
+                    .collect();
+                let mut text = format!("CSV 에서 중복 묶음 {}개를 불러왔습니다 (전체 {}행). 남길 곡을 확인한 뒤 아래 단추로 정리하세요.", report.groups, report.rows);
+                if !report.missing.is_empty() {
+                    text.push_str(&format!(" 파일을 찾지 못한 {}행은 뺐습니다 (예: {}). 정리할 곳(맥 폴더·아이팟)이 CSV 를 내보낸 곳과 같은지 확인하세요.", report.missing.len(), report.missing[0]));
+                }
+                let failed = report.missing.iter().map(|m| (PathBuf::from(m), "파일 없음".to_string())).collect();
+                self.notice = Some(Notice { text, color_err: false, failed });
+            }
+            CsvMsg::Exported(Err(e)) | CsvMsg::Imported(Err(e)) => {
+                self.notice = Some(Notice { text: e.clone(), color_err: e != dedupe::CANCELLED, failed: Vec::new() });
+            }
+            CsvMsg::Progress(..) => {}
+        }
+    }
+
+    /// 'AI 로 중복 찾기' 줄: CSV 내보내기 → AI 요청문 복사 → CSV 불러와 묶기
+    fn csv_row(&mut self, ui: &mut egui::Ui, p: &Palette, cfg: &Config, device: Option<&Ipod>) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("AI로 중복 찾기").font(theme::bold(13.5)).color(p.text)).on_hover_text(
+                "가수·그룹·앨범 이름이 한국어/영어로 달라 자동으로 못 찾은 중복을 AI 에게 가려 달라고 할 때 씁니다.\n1) 곡 목록을 CSV 로 내보내고  2) 요청문과 함께 AI 에게 주고  3) AI 가 group 칸을 채운 CSV 를 불러오면 그대로 묶어 줍니다.",
+            );
+            let ready = !self.is_busy() && (self.target == Target::Folder || device.is_some());
+            ui.add_enabled_ui(ready, |ui| {
+                if ui.button("① 곡 목록 CSV 내보내기…").on_hover_text("정리할 곳의 곡 전체를 CSV 로 저장합니다 (group·keep 칸은 비어 있음).").clicked() {
+                    self.export_csv(cfg, device);
+                }
+                if ui.button("② AI 요청문 복사").on_hover_text(csvlist::AI_PROMPT).clicked() {
+                    ui.ctx().copy_text(csvlist::AI_PROMPT.to_string());
+                    self.notice = Some(Notice { text: "AI 요청문을 복사했습니다. AI 에게 CSV 파일과 함께 붙여 넣으세요.".into(), color_err: false, failed: Vec::new() });
+                }
+                if ui.button("③ CSV 불러와 묶기…").on_hover_text("AI 가 group 칸을 채운 CSV 를 불러옵니다. 같은 group 의 곡이 한 묶음이 되고, keep 이 1 인 곡을 남길 곡으로 고릅니다.").clicked() {
+                    self.import_csv(cfg, device);
+                }
+            });
+        });
+    }
+
     /// 아이팟 음악 폴더를 훑는다
     fn start_ipod_scan(&mut self, mount: &Path) {
         self.start_scan(mount.join("iPod_Control").join("Music"));
@@ -543,6 +700,7 @@ impl DedupeTab {
         });
         // 결과를 보는 동안에는 설명을 숨기고 한 줄로 줄여 묶음이 한 화면에 들어오게 한다
         if self.scanned && !self.groups.is_empty() {
+            self.csv_row(ui, p, cfg, device);
             ui.horizontal(|ui| {
                 let place = match (self.target, device) {
                     (Target::Ipod, Some(d)) => format!("{}  ·  {}", d.name, d.mount.display()),
@@ -571,6 +729,7 @@ impl DedupeTab {
                 None => "연결된 아이팟이 없습니다. 아이팟을 디스크 모드로 연결하세요.".to_string(),
             };
             ui.label(RichText::new(text).font(theme::bold(14.0)).color(if device.is_some() { p.text } else { p.amber }));
+            self.csv_row(ui, p, cfg, device);
             return;
         }
         ui.label(
@@ -598,6 +757,7 @@ impl DedupeTab {
                 }
             });
         });
+        self.csv_row(ui, p, cfg, device);
     }
 
     fn body(&mut self, ui: &mut egui::Ui, p: &Palette, ctx: &egui::Context) {
@@ -707,6 +867,12 @@ impl DedupeTab {
             }
         }
 
+        if self.csv_job.is_some() {
+            let (d, t, what) = self.csv_progress;
+            let frac = if t == 0 { 0.0 } else { d as f32 / t as f32 };
+            ui.add(egui::ProgressBar::new(frac).text(if t == 0 { format!("{what}…") } else { format!("{what} {d} / {t}") }));
+            return;
+        }
         if self.ipod_job.is_some() {
             ui.horizontal(|ui| {
                 ui.spinner();

@@ -11,6 +11,10 @@
   묶음마다 기본은 라디오(한 곡 남기기)이고, '여러 곡 남기기'를 켜면 체크박스로 여러 곡을 남긴다. '모두 지우기'로 묶음 전체를
   지울 수도 있다(아이팟은 재생 목록에서도 빠진다). 줄이나 앨범 아트를 눌러도 고르고, 키보드는 ↑↓ 곡 이동(곡만 오간다),
   스페이스 고르기, 같은 묶음에서 스페이스 두 번이면 라디오 ↔ 여러 곡이 바뀐다.
+- **AI로 중복 찾기**: 가수·그룹·앨범 이름이 한국어/영어로 달라 자동으로 못 찾은 중복은, 곡 목록을 CSV 로 내보내
+  AI 에게 요청문과 함께 주고(같은 곡끼리 `group` 칸에 같은 값), 그 CSV 를 불러오면 그대로 묶어 중복 정리 화면에서 처리한다.
+  칸: `id, group, keep, title, artist, album_artist, album, track, duration, quality, size_bytes, path`.
+  `path`(정리할 곳 기준 상대 경로)로 곡을 찾고, `keep` 이 1 인 곡을 남길 곡으로 고른다(csvlist.rs).
 - **폴더 정리**: 맥 음악 폴더를 '가수/앨범/트랙 제목' 구조로 옮기고(되돌리기 가능), 앨범 아트가 없는 곡 파일에 그림을 심는다.
 - **앨범 아트**: 같은 앨범 곡의 그림 → 폴더의 cover.jpg → 온라인 검색(MusicBrainz·iTunes, 무료) 순으로 찾는다.
   '다른 앨범에서…'를 누르면 그림이 있는 다른 앨범을 이름이 비슷한 순서로 보여 주고(검색 가능), 고른 앨범의 그림을 쓴다.
@@ -58,6 +62,7 @@ src/
 ├── ipod_art.rs   아이팟에 있는 곡에 앨범 아트 채우기
 ├── artsearch.rs  앨범 아트 온라인 검색 (MusicBrainz + Cover Art Archive, iTunes)
 ├── organize.rs   맥 폴더 구조 정리·되돌리기, 곡 파일에 앨범 아트 심기·되돌리기
+├── csvlist.rs    곡 목록 CSV 내보내기·불러오기 (AI 로 중복 가리기), AI 요청문
 ├── organize_ui.rs 폴더 정리 탭 화면
 ├── popup.rs      앱 창 밖으로 옮길 수 있는 별도 창, 삭제 경고창
 ├── listkeys.rs   목록 화면 공용 키보드 (↑↓ 스페이스 ⌘A Esc Delete X)
@@ -179,10 +184,11 @@ src/
 
 | 변수 | 하는 일 |
 |---|---|
-| `PODLIFT_TAB=sync\|dedupe` | 시작 탭 |
+| `PODLIFT_TAB=sync\|dedupe\|organize` | 시작 탭 |
 | `PODLIFT_OPEN=<폴더>` | 가져오기 탭에서 그 폴더를 아이팟처럼 연다 |
 | `PODLIFT_SYNC_ADD=<폴더>` | 넣을 목록에 그 폴더의 곡을 미리 담는다 |
 | `PODLIFT_DEDUPE_DIR=<폴더>` | 중복 정리 탭에서 그 폴더를 바로 훑는다 |
+| `PODLIFT_ORGANIZE_DIR=<폴더>` | 폴더 정리 탭에서 그 폴더를 바로 훑는다 (`PODLIFT_ORGANIZE_MODE=art` 면 앨범 아트 넣기) |
 
 테스트 중 일부는 환경 변수가 있을 때만 실제 파일로 돈다:
 `PODLIFT_FAKE_IPOD`, `PODLIFT_DEDUPE_DIR`, `PODLIFT_SYNC_TEST` + `PODLIFT_SYNC_SRC`, `PODLIFT_HASH_OUT`.

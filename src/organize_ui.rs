@@ -70,7 +70,7 @@ pub struct OrganizeTab {
 
 impl OrganizeTab {
     pub fn new() -> Self {
-        Self {
+        let mut tab = Self {
             mode: Mode::Structure,
             scan: None,
             cancel: Arc::new(AtomicBool::new(false)),
@@ -91,7 +91,15 @@ impl OrganizeTab {
             art_cursor: None,
             art_scroll: false,
             confirm_art_delete: false,
+        };
+        // 개발·점검용: PODLIFT_ORGANIZE_DIR=<폴더> 면 그 폴더를 바로 훑는다 (PODLIFT_ORGANIZE_MODE=art 면 앨범 아트 넣기)
+        if let Ok(dir) = std::env::var("PODLIFT_ORGANIZE_DIR") {
+            if std::env::var("PODLIFT_ORGANIZE_MODE").as_deref() == Ok("art") {
+                tab.mode = Mode::Art;
+            }
+            tab.start_scan(Path::new(dir.trim()));
         }
+        tab
     }
 
     /// 앨범 아트 목록 키보드: ↑↓ 이동, 스페이스 선택, ⌘A 전체 선택, Esc 전체 해제, Delete 고른 곡 삭제
