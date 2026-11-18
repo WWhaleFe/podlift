@@ -17,7 +17,8 @@
   이 창들은 운영체제 별도 창이라 앱 창 밖으로 옮길 수 있다(popup.rs).
   아이팟에 이미 있는 곡에도 채울 수 있다('아이팟에 넣기' 탭의 '앨범 아트 채우기').
 
-- GUI: Rust + eframe(egui) 0.37, 테마·폰트는 Podfill 과 같은 코드
+- GUI: Rust + eframe(egui) 0.37, 테마·폰트는 Podfill 과 같은 코드. 아이콘은 Podfill 아이콘 생성기(`tools/make-icon.py`)의
+  sunset 테마로, Podfill(보라)과 구분되게 주황·분홍이다
 - 태그·음질 읽기: lofty / 변환: macOS 내장 `afconvert` (추가 설치 없음)
 
 ## 설치 (Homebrew)

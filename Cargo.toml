@@ -1,6 +1,6 @@
 [package]
 name = "podlift"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Podlift - 아이팟 클래식 음악 가져오기·넣기·중복 정리·폴더 정리 macOS 앱"
 publish = false
