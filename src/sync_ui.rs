@@ -79,6 +79,10 @@ pub struct SyncTab {
     /// (앨범, 넣기 체크)
     art_rows: Option<Vec<(Need, bool)>>,
     art_job: Option<ipod_art::Job>,
+    /// '앨범 아트 한 번에 채우기': 확인창, 진행 중인 작업, 지금 단계
+    auto_confirm: bool,
+    auto_job: Option<ipod_art::AutoJob>,
+    auto_stage: String,
     /// 온라인 검색 (찾은 수, 전체)
     art_search: Option<Receiver<BatchMsg>>,
     art_search_progress: (usize, usize),
@@ -108,6 +112,9 @@ impl SyncTab {
             art_rx: None,
             art_rows: None,
             art_job: None,
+            auto_confirm: false,
+            auto_job: None,
+            auto_stage: String::new(),
             art_search: None,
             art_search_progress: (0, 0),
             art_search_note: None,
@@ -123,7 +130,7 @@ impl SyncTab {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.job.is_some() || self.reader.is_some() || self.db_rx.is_some() || self.eject_rx.is_some() || self.art_rx.is_some() || self.art_job.is_some() || self.art_search.is_some()
+        self.job.is_some() || self.reader.is_some() || self.db_rx.is_some() || self.eject_rx.is_some() || self.art_rx.is_some() || self.art_job.is_some() || self.art_search.is_some() || self.auto_job.is_some()
     }
 
     /// 다른 탭이 아이팟 곡 DB 를 고쳤을 때 다시 읽는다
@@ -241,6 +248,33 @@ impl SyncTab {
             }
             if done {
                 self.art_search = None;
+            }
+        }
+        if let Some(job) = &self.auto_job {
+            let mut done = None;
+            for m in job.poll() {
+                match m {
+                    ipod_art::AutoMsg::Stage(t) => self.auto_stage = t,
+                    ipod_art::AutoMsg::Done(r) => done = Some(r),
+                }
+            }
+            if let Some(r) = done {
+                self.auto_job = None;
+                self.notice = Some(match r {
+                    Ok(o) if o.filled == 0 && o.missing.is_empty() => ("앨범 아트가 없는 곡이 없습니다.".into(), false),
+                    Ok(o) => {
+                        let mut t = format!(
+                            "곡 {}개에 앨범 아트를 채웠습니다 (곡 파일·아이팟 그림 {}앨범, 온라인 {}앨범). '마지막 작업 되돌리기'로 되돌릴 수 있습니다.",
+                            o.filled, o.from_file, o.online
+                        );
+                        if !o.missing.is_empty() {
+                            t.push_str(&format!(" 그림을 찾지 못한 {}앨범은 '앨범 아트 채우기…'에서 직접 고르세요 (예: {}).", o.missing.len(), o.missing[0]));
+                        }
+                        (t, false)
+                    }
+                    Err(e) => (format!("앨범 아트를 채우지 못했습니다: {e}"), true),
+                });
+                self.load_db();
             }
         }
         if let Some(job) = &self.art_job {
@@ -670,8 +704,8 @@ impl SyncTab {
                     let no_art = db.tracks.iter().filter(|t| !t.has_artwork || t.mhii_link == 0).count();
                     theme::chip(ui, &format!("아트 없는 곡 {no_art}"), p.amber, false);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_enabled_ui(self.job.is_none() && self.art_job.is_none(), |ui| {
-                            if no_art > 0 && ui.button("앨범 아트 채우기…").on_hover_text("아이팟에 있지만 앨범 아트가 없는 곡에 그림을 붙입니다.").clicked() {
+                        ui.add_enabled_ui(self.job.is_none() && self.art_job.is_none() && self.auto_job.is_none(), |ui| {
+                            if no_art > 0 && ui.button("앨범 아트 채우기…").on_hover_text("앨범마다 그림 출처를 보고 골라서 채웁니다 (다른 앨범 그림·그림 파일·온라인 검색).").clicked() {
                                 open_art = true;
                             }
                             if ui.button("다시 읽기").clicked() {
@@ -693,6 +727,54 @@ impl SyncTab {
                         });
                     });
                 });
+                // 아트 없는 곡이 있으면 안내 띠와 '한 번에 채우기' (Finder 동기화 뒤에 흔하다)
+                let no_art = db.tracks.iter().filter(|t| !t.has_artwork || t.mhii_link == 0).count();
+                let total = db.tracks.len();
+                if self.auto_job.is_some() {
+                    theme::banner(p, p.blue).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new(&self.auto_stage).color(p.text));
+                        });
+                    });
+                } else if no_art > 0 && self.job.is_none() && self.art_job.is_none() {
+                    theme::banner(p, p.amber).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            let why = if no_art == total { " Finder·Music 동기화 뒤에는 이렇게 그림 연결이 모두 빠지곤 합니다." } else { "" };
+                            ui.add(
+                                egui::Label::new(RichText::new(format!("아이팟 곡 {no_art}개에 앨범 아트가 없어 아이팟 화면에 그림이 보이지 않습니다.{why}")).color(p.text))
+                                    .wrap(),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if theme::tinted_button(ui, p.accent, "앨범 아트 한 번에 채우기", egui::vec2(200.0, 32.0))
+                                    .on_hover_text("곡 파일 속 그림(없으면 같은 앨범의 아이팟 그림, 그것도 없으면 온라인 검색)을 아이팟용으로 저장하고 곡에 연결합니다.")
+                                    .clicked()
+                                {
+                                    self.auto_confirm = true;
+                                }
+                            });
+                        });
+                    });
+                }
+                if self.auto_confirm {
+                    let body = format!(
+                        "아트 없는 곡 {no_art}개에 앨범 아트를 채웁니다.\n곡 파일 속 그림을 아이팟용 크기로 바꿔 저장하고 곡에 연결합니다(곡 파일은 고치지 않습니다). 그림이 없는 앨범은 온라인(MusicBrainz·iTunes)에서 앨범·가수 이름으로 찾습니다.\n곡이 많으면 몇 분 걸리며, '마지막 작업 되돌리기'로 되돌릴 수 있습니다."
+                    );
+                    match crate::popup::confirm(ui.ctx(), p, "auto-art", "앨범 아트를 채울까요?", &body, "채우기", p.accent) {
+                        Some(true) => {
+                            self.auto_confirm = false;
+                            if let Some(mount) = self.mount.clone() {
+                                self.notice = None;
+                                self.auto_stage = "시작하는 중…".into();
+                                self.auto_job = Some(ipod_art::start_auto(mount, db.firewire_id.clone(), true));
+                            }
+                        }
+                        Some(false) => self.auto_confirm = false,
+                        None => {}
+                    }
+                }
                 if restore {
                     self.restore();
                 }
@@ -914,7 +996,7 @@ impl SyncTab {
         }
         let n = self.rows.iter().filter(|r| r.include && !matches!(r.decision, Decision::Unsupported(_))).count();
         let dups = self.rows.iter().filter(|r| r.include && matches!(r.decision, Decision::Exists(_) | Decision::QueueDup(_))).count();
-        let ready = n > 0 && matches!(self.db, Some(Ok(_))) && self.reader.is_none() && self.eject_rx.is_none();
+        let ready = n > 0 && matches!(self.db, Some(Ok(_))) && self.reader.is_none() && self.eject_rx.is_none() && self.auto_job.is_none() && self.art_job.is_none();
         if self.confirm_dups && (dups == 0 || !ready) {
             self.confirm_dups = false;
         }

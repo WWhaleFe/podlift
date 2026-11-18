@@ -195,3 +195,50 @@ fn real_ipod_apply_dedupe() {
     println!("{out}");
     println!("[확인] 되돌리기 기록: {:?}", sync::last_backup(&mount));
 }
+
+/// 실제 아이팟에서 앨범 아트 채우기를 실행한다. 곡 파일 속 그림, 없으면 온라인 검색.
+/// PODLIFT_REAL_IPOD=<마운트> 와 PODLIFT_REAL_ART_APPLY=yes-write 가 모두 있을 때만 돈다.
+#[test]
+fn real_ipod_fill_art() {
+    let (Ok(mount), Ok(flag)) = (std::env::var("PODLIFT_REAL_IPOD"), std::env::var("PODLIFT_REAL_ART_APPLY")) else { return };
+    assert_eq!(flag, "yes-write");
+    use crate::ipod_art::{self, ArtSource};
+    let mount = PathBuf::from(mount);
+    let fwid = ipod::firewire_id(&mount).and_then(|s| crate::itunesdb::parse_firewire_id(&s)).expect("고유 번호");
+    let tracks = sync::open_db(&mount).unwrap().tracks();
+    let needs = ipod_art::needs(&mount, &tracks);
+    let mut work: Vec<(Vec<u32>, ArtSource)> = Vec::new();
+    let (mut from_file, mut online, mut none) = (0, 0, Vec::new());
+    for n in &needs {
+        match &n.source {
+            Some(s) => {
+                from_file += 1;
+                work.push((n.track_ids.clone(), s.clone()));
+            }
+            None => match crate::artsearch::search(&n.album, &n.artist) {
+                Ok(Some(f)) => {
+                    online += 1;
+                    println!("[온라인] {} - {} ← {}", n.album, n.artist, f.from);
+                    work.push((n.track_ids.clone(), ArtSource::Online(f.file)));
+                }
+                _ => none.push(format!("{} - {} ({}곡)", n.album, n.artist, n.track_ids.len())),
+            },
+        }
+    }
+    println!("[계획] 앨범 {}개: 곡 파일·아이팟 그림 {from_file}, 온라인 {online}, 그림 없음 {}", needs.len(), none.len());
+    for x in &none {
+        println!("    그림 없음: {x}");
+    }
+    let filled = ipod_art::run(&mount, &work, Some(&fwid)).expect("앨범 아트 채우기");
+    let after = sync::open_db(&mount).unwrap().tracks();
+    let raw = std::fs::read(sync::db_path(&mount)).unwrap();
+    let mut copy = raw.clone();
+    crate::itunesdb::write_hash58(&mut copy, &fwid);
+    println!(
+        "[결과] 그림을 붙인 곡 {filled}, 아트 있는 곡 {} / {}, 서명 {}",
+        after.iter().filter(|t| t.has_artwork && t.mhii_link != 0).count(),
+        after.len(),
+        if copy == raw { "맞음" } else { "틀림" }
+    );
+    println!("[확인] 그림 DB: {:?}", ArtworkDb::open(&mount).map(|a| a.formats().len()));
+}

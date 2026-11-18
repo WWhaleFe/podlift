@@ -26,15 +26,20 @@ pub fn native_window(ctx: &egui::Context, id: &str, title: &str, size: [f32; 2],
 /// Some(true) = 삭제를 눌렀음, Some(false) = 취소(취소 단추·Esc·바깥 클릭), None = 아직 떠 있음.
 /// 실수로 지우지 않도록 엔터로는 삭제하지 않는다.
 pub fn confirm_delete(ctx: &egui::Context, p: &Palette, id: &str, title: &str, body: &str, action: &str) -> Option<bool> {
+    confirm(ctx, p, id, title, body, action, p.red)
+}
+
+/// 실행 전에 한 번 묻는 창 (삭제가 아닌 일). 답은 confirm_delete 와 같다.
+pub fn confirm(ctx: &egui::Context, p: &Palette, id: &str, title: &str, body: &str, action: &str, color: egui::Color32) -> Option<bool> {
     let mut answer = None;
     let modal = egui::Modal::new(egui::Id::unique(("confirm-delete", id))).show(ctx, |ui| {
         ui.set_width(440.0);
-        ui.label(egui::RichText::new(title).font(theme::bold(17.0)).color(p.red));
+        ui.label(egui::RichText::new(title).font(theme::bold(17.0)).color(color));
         ui.add_space(6.0);
         ui.label(egui::RichText::new(body).size(14.0).color(p.text));
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            if theme::tinted_button(ui, p.red, action, egui::vec2(150.0, 36.0)).clicked() {
+            if theme::tinted_button(ui, color, action, egui::vec2(150.0, 36.0)).clicked() {
                 answer = Some(true);
             }
             if theme::ghost_button(ui, p, "취소").clicked() {

@@ -187,6 +187,81 @@ pub fn run(mount: &Path, work: &[(Vec<u32>, ArtSource)], fwid: Option<&[u8]>) ->
     Ok(n)
 }
 
+/// '한 번에 채우기' 진행 소식
+pub enum AutoMsg {
+    /// 지금 하는 일 (화면에 그대로 보여 준다)
+    Stage(String),
+    Done(Result<AutoOutcome, String>),
+}
+
+#[derive(Debug, Default)]
+pub struct AutoOutcome {
+    /// 그림을 붙인 곡 수
+    pub filled: usize,
+    /// 그림을 채운 앨범 수 (곡 파일·아이팟 그림 / 온라인)
+    pub from_file: usize,
+    pub online: usize,
+    /// 그림을 찾지 못한 앨범 ("앨범 - 가수")
+    pub missing: Vec<String>,
+}
+
+pub struct AutoJob {
+    rx: Receiver<AutoMsg>,
+}
+
+impl AutoJob {
+    pub fn poll(&self) -> Vec<AutoMsg> {
+        self.rx.try_iter().collect()
+    }
+}
+
+/// 아트 없는 곡을 한 번에 채운다: 같은 앨범의 아이팟 그림 → 곡 파일 속 그림 → 온라인 검색(online 이면).
+/// 찾지 못한 앨범은 건너뛰고 알려 준다.
+pub fn start_auto(mount: PathBuf, fwid: Option<Vec<u8>>, online: bool) -> AutoJob {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let send = |m: AutoMsg| {
+            let _ = tx.send(m);
+        };
+        let result = (|| {
+            send(AutoMsg::Stage("아이팟 곡 DB 를 읽는 중…".into()));
+            let tracks = sync::open_db(&mount)?.tracks();
+            send(AutoMsg::Stage("아트 없는 곡의 파일에서 그림을 찾는 중… (곡이 많으면 몇 분 걸립니다)".into()));
+            let needs = needs(&mount, &tracks);
+            let mut out = AutoOutcome::default();
+            let mut work: Vec<(Vec<u32>, ArtSource)> = Vec::new();
+            let lacking: Vec<&Need> = needs.iter().filter(|n| n.source.is_none()).collect();
+            for n in needs.iter().filter(|n| n.source.is_some()) {
+                out.from_file += 1;
+                work.push((n.track_ids.clone(), n.source.clone().unwrap()));
+            }
+            for (i, n) in lacking.iter().enumerate() {
+                let found = if online && !n.album.trim().is_empty() {
+                    send(AutoMsg::Stage(format!("그림이 없는 앨범을 온라인에서 찾는 중… {} / {}", i + 1, lacking.len())));
+                    crate::artsearch::search(&n.album, &n.artist).ok().flatten()
+                } else {
+                    None
+                };
+                match found {
+                    Some(f) => {
+                        out.online += 1;
+                        work.push((n.track_ids.clone(), ArtSource::Online(f.file)));
+                    }
+                    None => out.missing.push(format!("{} - {}", if n.album.is_empty() { "(앨범 없음)" } else { &n.album }, n.artist)),
+                }
+            }
+            if work.is_empty() {
+                return Ok(out);
+            }
+            send(AutoMsg::Stage(format!("앨범 {}개의 그림을 아이팟에 저장하는 중… 아이팟을 빼지 마세요.", work.len())));
+            out.filled = run(&mount, &work, fwid.as_deref())?;
+            Ok(out)
+        })();
+        send(AutoMsg::Done(result));
+    });
+    AutoJob { rx }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +304,16 @@ mod tests {
 
         sync::restore_last(&mount).unwrap();
         assert_eq!(std::fs::read(sync::db_path(&mount)).unwrap(), before);
+
+        // 한 번에 채우기: 곡 파일이 없으니 그림을 못 찾고(온라인 끔) 건너뛴 앨범으로 알려 준다
+        let job = start_auto(mount.clone(), None, false);
+        let out = loop {
+            if let Some(AutoMsg::Done(r)) = job.poll().into_iter().find(|m| matches!(m, AutoMsg::Done(_))) {
+                break r.unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!((out.filled, out.from_file, out.missing.len()), (0, 0, 2));
         assert!(!artworkdb::db_path(&mount).exists());
         let _ = std::fs::remove_dir_all(&mount);
     }

@@ -15,7 +15,9 @@
 - **앨범 아트**: 같은 앨범 곡의 그림 → 폴더의 cover.jpg → 온라인 검색(MusicBrainz·iTunes, 무료) 순으로 찾는다.
   '다른 앨범에서…'를 누르면 그림이 있는 다른 앨범을 이름이 비슷한 순서로 보여 주고(검색 가능), 고른 앨범의 그림을 쓴다.
   이 창들은 운영체제 별도 창이라 앱 창 밖으로 옮길 수 있다(popup.rs).
-  아이팟에 이미 있는 곡에도 채울 수 있다('아이팟에 넣기' 탭의 '앨범 아트 채우기').
+  아이팟에 이미 있는 곡에도 채울 수 있다('아이팟에 넣기' 탭). 아트 없는 곡이 있으면 안내 띠가 뜨고 '앨범 아트 한 번에 채우기'를
+  누르면 곡 파일 속 그림 → 같은 앨범의 아이팟 그림 → 온라인 검색 순으로 찾아 한 번에 채운다(Finder 동기화 뒤에 그림 연결이
+  모두 빠졌을 때 쓰기 좋다). 앨범마다 골라서 채우려면 '앨범 아트 채우기…'.
 
 - GUI: Rust + eframe(egui) 0.37, 테마·폰트는 Podfill 과 같은 코드. 아이콘은 Podfill 아이콘 생성기(`tools/make-icon.py`)의
   sunset 테마로, Podfill(보라)과 구분되게 주황·분홍이다
@@ -187,4 +189,5 @@ src/
 
 실제 아이팟 점검(`real_ipod_check.rs`): `PODLIFT_REAL_IPOD=/Volumes/<이름>` 이면 읽기만 한다
 (연결·서명·되쓰기·색인 확인, 곡 하나 빼기 모의). `PODLIFT_REAL_DEDUPE=1` 을 더하면 중복 찾기와 정리 모의 실행,
-`PODLIFT_REAL_OUT=<폴더>` 면 목록과 모의 DB 를 남긴다. `PODLIFT_REAL_APPLY=yes-write` 는 실제로 정리한다.
+`PODLIFT_REAL_OUT=<폴더>` 면 목록과 모의 DB 를 남긴다. `PODLIFT_REAL_APPLY=yes-write` 는 실제로 정리하고,
+`PODLIFT_REAL_ART_APPLY=yes-write` 는 실제로 앨범 아트를 채운다. `PODLIFT_REAL_ART=1` 은 채울 수 있는 앨범 수만 센다.
