@@ -29,6 +29,9 @@ brew install --cask wwhalefe/tap/podlift
 새 버전: `brew update && brew upgrade --cask podlift`. Apple Silicon(arm64) Mac, macOS 12 이상.
 공증(notarize)하지 않은 앱이라 cask 가 설치할 때 격리 표시(quarantine)를 지운다.
 
+새 버전 내기: `Cargo.toml` 의 `version` 을 올리고 커밋한 뒤 `./release.sh "바뀐 점"`. 앱을 만들어 GitHub 릴리스
+(`podlift-macos-arm64-<버전>.zip`)로 올리면, 탭의 Bump 워크플로가 30분 안에 cask 를 새 버전으로 바꾼다.
+
 ## 빌드·설치 (소스에서)
 
 ```
