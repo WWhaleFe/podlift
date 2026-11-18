@@ -1,0 +1,38 @@
+[package]
+name = "podlift"
+version = "0.1.0"
+edition = "2021"
+description = "Podlift - 아이팟 클래식 음악 가져오기·넣기·중복 정리·폴더 정리 macOS 앱"
+publish = false
+
+[[bin]]
+name = "podlift"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard"] }
+egui_extras = "0.37.0"
+# 음악 파일 태그(ID3·MP4·RIFF·AIFF) 읽기
+lofty = "0.25"
+rfd = "0.15"
+dirs = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+memmap2 = "0.9"
+# 앨범 아트 크기 읽기·썸네일
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# 중복 정리에서 버리는 파일을 휴지통으로
+trash = "5"
+walkdir = "2"
+# 아이팟 SysInfoExtended(FirewireGuid) 읽기, iTunesDB 서명(hash58)
+plist = "1"
+sha1 = "0.10"
+rand = "0.8"
+# 아이팟 DB 시각(1904년 기준 현지 시각)
+chrono = "0.4"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 4
+strip = false
